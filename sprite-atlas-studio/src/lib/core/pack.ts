@@ -1,6 +1,7 @@
 import { MaxRectsPacker } from "maxrects-packer";
-import type { PackedFrame, TrimRect } from "./types";
+import type { FrameMeta, PackedFrame, TrimRect } from "./types";
 import { nextPow2 } from "./trim";
+import { frameMetaToAtlas } from "./meta";
 
 /** 参与打包的单帧输入（尺寸为裁切后的内容尺寸） */
 export interface PackInput {
@@ -14,6 +15,8 @@ export interface PackInput {
   srcW: number;
   srcH: number;
   duration: number;
+  /** pivot / anchor / 九宫格（原始图像坐标系），打包时换算为图集坐标 */
+  meta: FrameMeta;
 }
 
 export interface PackLayout {
@@ -93,21 +96,29 @@ export function packFrames(
     throw new Error(`图集尺寸不足：需要 ${atlasWidth}×${atlasHeight}，超过上限 ${maxSize}`);
   }
 
-  // 按输入顺序输出，内容坐标 = 矩形坐标 + padding
+  // 按输入顺序输出，内容坐标 = 矩形坐标 + padding；
+  // 元数据在此由原始图像坐标系换算为图集坐标系（裁切 + 留白均已计入）
   const frames: PackedFrame[] = inputs.map((f) => {
     const r = byId.get(f.id);
     if (!r) throw new Error(`帧 ${f.name} 未能放入图集`);
+    const contentX = r.x + padding;
+    const contentY = r.y + padding;
+    const atlasMeta = frameMetaToAtlas(f.meta, f.trim, contentX, contentY);
     return {
       id: f.id,
       name: f.name,
-      x: r.x + padding,
-      y: r.y + padding,
+      x: contentX,
+      y: contentY,
       w: f.w,
       h: f.h,
       trim: f.trim,
       srcW: f.srcW,
       srcH: f.srcH,
-      duration: f.duration
+      duration: f.duration,
+      meta: f.meta,
+      atlasPivot: atlasMeta.pivot,
+      atlasAnchor: atlasMeta.anchor,
+      atlasNineSlice: atlasMeta.nineSlice
     };
   });
 

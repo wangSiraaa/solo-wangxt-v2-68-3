@@ -1,7 +1,12 @@
 <script lang="ts">
-  import { packResult, selectedId } from "../core/store";
+  import { editId, packResult, selectedId } from "../core/store";
 
   let hoverName: string | null = null;
+
+  function select(id: string) {
+    selectedId.set(id);
+    editId.set(id);
+  }
 </script>
 
 <div class="panel">
@@ -29,7 +34,7 @@
           data-rect-for={f.name}
           on:mouseenter={() => (hoverName = f.name)}
           on:mouseleave={() => (hoverName = null)}
-          on:click={() => selectedId.set(f.id)}
+          on:click={() => select(f.id)}
         >
           <span class="tag mono">{i + 1}</span>
         </button>
@@ -49,7 +54,7 @@
             <tr
               class:active={$selectedId === f.id || hoverName === f.name}
               data-row-for={f.name}
-              on:click={() => selectedId.set(f.id)}
+              on:click={() => select(f.id)}
             >
               <td class="mono">{i + 1}</td>
               <td class="name" title={f.name}>{f.name}</td>

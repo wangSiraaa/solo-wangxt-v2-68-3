@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { frames, moveFrame, removeFrame, selectedId, setDuration } from "../core/store";
+  import { editId, frames, moveFrame, removeFrame, selectedId, setDuration } from "../core/store";
 
   let dragIndex: number | null = null;
 
@@ -15,6 +15,11 @@
       frames.set(list);
     }
     dragIndex = null;
+  }
+
+  function select(id: string) {
+    selectedId.set(id);
+    editId.set(id);
   }
 </script>
 
@@ -35,8 +40,8 @@
           on:dragstart={() => onDragStart(i)}
           on:dragover|preventDefault
           on:drop|preventDefault={() => onDrop(i)}
-          on:click={() => selectedId.set(f.id)}
-          on:keydown={(e) => e.key === "Enter" && selectedId.set(f.id)}
+          on:click={() => select(f.id)}
+          on:keydown={(e) => e.key === "Enter" && select(f.id)}
           data-frame-name={f.name}
         >
           <span class="idx mono">{i + 1}</span>

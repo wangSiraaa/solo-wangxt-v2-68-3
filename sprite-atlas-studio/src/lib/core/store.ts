@@ -1,9 +1,24 @@
 import { derived, get, writable } from "svelte/store";
-import type { FrameItem, PackResult, PackedFrame, Settings, TrimRect } from "./types";
+import type {
+  FrameItem,
+  FrameMeta,
+  NineSlice,
+  PackResult,
+  PackedFrame,
+  Point,
+  Settings,
+  TrimRect
+} from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 import { computeAlphaBBox } from "./trim";
 import { packFrames, type PackInput, type PackLayout } from "./pack";
-import { buildAtlasJSON, parseAtlasJSON, type AtlasJSON } from "./serialize";
+import {
+  defaultFrameMeta,
+  frameMetaToAtlas,
+  validateNineSlice,
+  validatePoint
+} from "./meta";
+import { buildAtlasJSON, parseAtlasJSON, type AtlasJSON, type ParsedFrameEntry } from "./serialize";
 import {
   blobToImage,
   canvasToBlob,
@@ -21,6 +36,8 @@ export const frames = writable<FrameItem[]>([]);
 export const settings = writable<Settings>({ ...DEFAULT_SETTINGS });
 export const packResult = writable<PackResult | null>(null);
 export const selectedId = writable<string | null>(null);
+/** 元数据编辑器当前编辑的帧（只随显式点击变化，不随动画播放跳动） */
+export const editId = writable<string | null>(null);
 export const busy = writable(false);
 export const status = writable<{ kind: "info" | "error"; text: string } | null>(null);
 
@@ -74,7 +91,8 @@ export async function addFiles(files: Iterable<File>): Promise<void> {
           width: img.naturalWidth,
           height: img.naturalHeight,
           blob: file,
-          url: URL.createObjectURL(file)
+          url: URL.createObjectURL(file),
+          meta: defaultFrameMeta(img.naturalWidth, img.naturalHeight)
         });
       } catch {
         notify(`无法解码图片：${file.name}`, "error");
@@ -122,6 +140,109 @@ export function setAllDurations(ms: number): void {
   frames.set(get(frames).map((f) => ({ ...f, duration: v })));
 }
 
+// ---------- 帧元数据（pivot / anchor / 九宫格） ----------
+
+/**
+ * 用当前打包结果重建 lastJSON（元数据变化后保持导出数据同步）。
+ * settings 沿用上次 JSON 中记录的打包时设置，保证 JSON 与实际图集自洽。
+ */
+function rebuildLastJSON(pack: PackResult): void {
+  const prev = lastJSON;
+  const packedSettings = prev?.meta.settings;
+  const current = get(settings);
+  lastJSON = buildAtlasJSON(
+    { atlasWidth: pack.atlasWidth, atlasHeight: pack.atlasHeight, frames: pack.frames },
+    {
+      imageName: prev?.meta.image ?? "atlas.png",
+      trimmed: pack.trimmed,
+      settings: packedSettings
+        ? {
+            ...current,
+            trim: packedSettings.trim,
+            padding: packedSettings.padding,
+            maxSize: packedSettings.maxSize,
+            pot: packedSettings.pot
+          }
+        : current
+    }
+  );
+}
+
+/**
+ * 应用新的元数据。元数据不影响打包布局（矩形尺寸不变），
+ * 因此同步刷新已有打包结果中的图集坐标即可，无需重新打包；
+ * 原始图像坐标系中的值保持不变——重新裁切/改留白/重新打包都不会改变它。
+ */
+function applyFrameMeta(id: string, meta: FrameMeta): void {
+  frames.set(get(frames).map((f) => (f.id === id ? { ...f, meta } : f)));
+  const pack = get(packResult);
+  if (pack) {
+    const nextFrames = pack.frames.map((pf) => {
+      if (pf.id !== id) return pf;
+      const atlasMeta = frameMetaToAtlas(meta, pf.trim, pf.x, pf.y);
+      return {
+        ...pf,
+        meta,
+        atlasPivot: atlasMeta.pivot,
+        atlasAnchor: atlasMeta.anchor,
+        atlasNineSlice: atlasMeta.nineSlice
+      };
+    });
+    const next = { ...pack, frames: nextFrames };
+    packResult.set(next);
+    rebuildLastJSON(next);
+  }
+}
+
+/**
+ * 设置 pivot（原始图像坐标系，像素）。允许位于被裁掉的透明区。
+ * 非法值（非有限数、超出原图范围）被拒绝并保留上次有效值。
+ * @returns 是否接受
+ */
+export function setFramePivot(id: string, p: Point): boolean {
+  const f = get(frames).find((x) => x.id === id);
+  if (!f) return false;
+  const err = validatePoint(p, f.width, f.height);
+  if (err) {
+    notify(`pivot 非法：${err}`, "error");
+    return false;
+  }
+  applyFrameMeta(id, { ...f.meta, pivot: { x: p.x, y: p.y } });
+  return true;
+}
+
+/** 设置 anchor（原始图像坐标系，像素）。非法值被拒绝并保留上次有效值。 */
+export function setFrameAnchor(id: string, p: Point): boolean {
+  const f = get(frames).find((x) => x.id === id);
+  if (!f) return false;
+  const err = validatePoint(p, f.width, f.height);
+  if (err) {
+    notify(`anchor 非法：${err}`, "error");
+    return false;
+  }
+  applyFrameMeta(id, { ...f.meta, anchor: { x: p.x, y: p.y } });
+  return true;
+}
+
+/**
+ * 设置九宫格边界（原始图像坐标系，像素）；传 null 表示不可拉伸。
+ * 边界不得落到原图之外或相互交叉；非法值被拒绝并保留上次有效值。
+ * @returns 是否接受
+ */
+export function setFrameNineSlice(id: string, ns: NineSlice | null): boolean {
+  const f = get(frames).find((x) => x.id === id);
+  if (!f) return false;
+  if (ns !== null) {
+    const err = validateNineSlice(ns, f.width, f.height);
+    if (err) {
+      notify(`九宫格非法：${err}`, "error");
+      return false;
+    }
+  }
+  applyFrameMeta(id, { ...f.meta, nineSlice: ns ? { ...ns } : null });
+  return true;
+}
+
 export function clearAll(): void {
   for (const f of get(frames)) URL.revokeObjectURL(f.url);
   const pack = get(packResult);
@@ -129,6 +250,7 @@ export function clearAll(): void {
   frames.set([]);
   packResult.set(null);
   selectedId.set(null);
+  editId.set(null);
   lastJSON = null;
 }
 
@@ -181,7 +303,8 @@ export async function pack(): Promise<void> {
       trim: t.trim,
       srcW: t.item.width,
       srcH: t.item.height,
-      duration: t.item.duration
+      duration: t.item.duration,
+      meta: t.item.meta
     }));
 
     const layout: PackLayout = packFrames(inputs, s.padding, s.maxSize, s.pot);
@@ -257,6 +380,27 @@ async function blobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
 
 // ---------- 导入 JSON 恢复 ----------
 
+/** 由解析出的 JSON 帧条目构造 PackedFrame（含图集坐标系换算） */
+function packedFrameFromParsed(f: ParsedFrameEntry, id: string): PackedFrame {
+  const atlasMeta = frameMetaToAtlas(f.meta, f.spriteSourceSize, f.frame.x, f.frame.y);
+  return {
+    id,
+    name: f.name,
+    x: f.frame.x,
+    y: f.frame.y,
+    w: f.frame.w,
+    h: f.frame.h,
+    trim: { ...f.spriteSourceSize },
+    srcW: f.sourceSize.w,
+    srcH: f.sourceSize.h,
+    duration: f.duration,
+    meta: f.meta,
+    atlasPivot: atlasMeta.pivot,
+    atlasAnchor: atlasMeta.anchor,
+    atlasNineSlice: atlasMeta.nineSlice
+  };
+}
+
 /**
  * 从导出的 JSON 恢复帧列表、时长与打包结果。
  * 图集图片来源：JSON 内嵌的 atlasDataURL，或用户同时选择的 atlas.png。
@@ -308,20 +452,10 @@ export async function importJSON(jsonFile: File, atlasFile?: File): Promise<void
         width: f.sourceSize.w,
         height: f.sourceSize.h,
         blob,
-        url: URL.createObjectURL(blob)
+        url: URL.createObjectURL(blob),
+        meta: f.meta
       });
-      packedFrames.push({
-        id,
-        name: f.name,
-        x: f.frame.x,
-        y: f.frame.y,
-        w: f.frame.w,
-        h: f.frame.h,
-        trim: { ...f.spriteSourceSize },
-        srcW: f.sourceSize.w,
-        srcH: f.sourceSize.h,
-        duration: f.duration
-      });
+      packedFrames.push(packedFrameFromParsed(f, id));
     }
 
     clearAll();
@@ -370,24 +504,17 @@ export async function restoreFromDB(): Promise<boolean> {
       width: f.width,
       height: f.height,
       blob: f.blob,
-      url: URL.createObjectURL(f.blob)
+      url: URL.createObjectURL(f.blob),
+      // 旧版本数据可能没有元数据：补默认值（中心 pivot/anchor，不可拉伸）
+      meta: f.meta ?? defaultFrameMeta(f.width, f.height)
     }));
     frames.set(restored);
     settings.set({ ...DEFAULT_SETTINGS, ...stored.settings });
     if (stored.pack) {
       const parsed = parseAtlasJSON(stored.pack.json);
-      const packedFrames: PackedFrame[] = parsed.frames.map((f, i) => ({
-        id: restored[i]?.id ?? uid(),
-        name: f.name,
-        x: f.frame.x,
-        y: f.frame.y,
-        w: f.frame.w,
-        h: f.frame.h,
-        trim: { ...f.spriteSourceSize },
-        srcW: f.sourceSize.w,
-        srcH: f.sourceSize.h,
-        duration: f.duration
-      }));
+      const packedFrames: PackedFrame[] = parsed.frames.map((f, i) =>
+        packedFrameFromParsed(f, restored[i]?.id ?? uid())
+      );
       packResult.set({
         atlasWidth: parsed.size.w,
         atlasHeight: parsed.size.h,

@@ -13,7 +13,8 @@ import { computeAlphaBBox } from "../../src/lib/core/trim";
 import { packFrames, type PackInput } from "../../src/lib/core/pack";
 import { buildAtlasJSON, parseAtlasJSON } from "../../src/lib/core/serialize";
 import { Animator, frameIndexAt } from "../../src/lib/core/animator";
-import { DEFAULT_SETTINGS, type Pixels, type TrimRect } from "../../src/lib/core/types";
+import { defaultFrameMeta } from "../../src/lib/core/meta";
+import { DEFAULT_SETTINGS, type FrameMeta, type Pixels, type TrimRect } from "../../src/lib/core/types";
 
 const ASSETS = join(__dirname, "..", "..", "test-assets");
 
@@ -89,7 +90,8 @@ describe("完整管线：真实 PNG（不同尺寸 + 透明边缘）", () => {
       trim: t.trim,
       srcW: t.srcW,
       srcH: t.srcH,
-      duration: t.duration
+      duration: t.duration,
+      meta: defaultFrameMeta(t.srcW, t.srcH)
     }));
     const layout = packFrames(inputs, PADDING, 1024, true);
 
@@ -194,5 +196,160 @@ describe("完整管线：真实 PNG（不同尺寸 + 透明边缘）", () => {
     // 帧序应包含循环：第一轮 8 帧播完后回到 0
     expect(seq).toContain(0);
     expect(seq.filter((v) => v === 0).length).toBeGreaterThan(1);
+  });
+});
+
+describe("元数据全管线：pivot / anchor / 九宫格（真实 PNG）", () => {
+  /** 为每帧构造元数据：pivot/anchor 落在四周透明边内，偶数帧启用九宫格 */
+  function metaFor(name: string, index: number): FrameMeta {
+    const spec = EXPECTED[name]!;
+    const [w, h] = spec.size;
+    const [mt, mr, mb, ml] = spec.margin;
+    return {
+      pivot: { x: Math.floor(ml / 2), y: Math.floor(mt / 2) }, // 左上透明区内
+      anchor: { x: w - Math.floor(mr / 2) - 1, y: h - Math.floor(mb / 2) - 1 }, // 右下透明区内
+      nineSlice:
+        index % 2 === 0
+          ? { left: ml + 1, right: w - mr - 1, top: mt + 1, bottom: h - mb - 1 }
+          : null
+    };
+  }
+
+  async function trimmedWithMeta() {
+    const frames = await loadAll();
+    return frames.map((f, i) => {
+      const spec = EXPECTED[f.name]!;
+      const [w, h] = spec.size;
+      const bbox = computeAlphaBBox(pixelsOf(f.img, w, h))!;
+      return {
+        name: f.name,
+        srcW: w,
+        srcH: h,
+        trim: bbox,
+        duration: DURATIONS[i]!,
+        meta: metaFor(f.name, i)
+      };
+    });
+  }
+
+  function toInputs(trimmed: Awaited<ReturnType<typeof trimmedWithMeta>>): PackInput[] {
+    return trimmed.map((t, i) => ({
+      id: `f${i}`,
+      name: t.name,
+      w: t.trim.w,
+      h: t.trim.h,
+      trim: t.trim,
+      srcW: t.srcW,
+      srcH: t.srcH,
+      duration: t.duration,
+      meta: t.meta
+    }));
+  }
+
+  it("四周透明边不同的帧：图集坐标换算全部正确", async () => {
+    const trimmed = await trimmedWithMeta();
+    const layout = packFrames(toInputs(trimmed), PADDING, 1024, true);
+
+    for (const [i, f] of layout.frames.entries()) {
+      const t = trimmed[i]!;
+      // pivot / anchor：内容位置 + (原图坐标 - 裁切偏移)，留白已含在内容位置中
+      expect(f.atlasPivot, `${t.name} pivot`).toEqual({
+        x: f.x + (t.meta.pivot.x - t.trim.x),
+        y: f.y + (t.meta.pivot.y - t.trim.y)
+      });
+      expect(f.atlasAnchor, `${t.name} anchor`).toEqual({
+        x: f.x + (t.meta.anchor.x - t.trim.x),
+        y: f.y + (t.meta.anchor.y - t.trim.y)
+      });
+      // pivot 在透明区内 → 图集坐标落在内容框外，但仍是合法数值
+      if (t.trim.x > 0) expect(f.atlasPivot.x).toBeLessThan(f.x);
+      if (t.trim.y > 0) expect(f.atlasPivot.y).toBeLessThan(f.y);
+      // 九宫格逐线换算
+      if (t.meta.nineSlice) {
+        expect(f.atlasNineSlice, `${t.name} 九宫格`).toEqual({
+          left: f.x + (t.meta.nineSlice.left - t.trim.x),
+          right: f.x + (t.meta.nineSlice.right - t.trim.x),
+          top: f.y + (t.meta.nineSlice.top - t.trim.y),
+          bottom: f.y + (t.meta.nineSlice.bottom - t.trim.y)
+        });
+      } else {
+        expect(f.atlasNineSlice).toBeNull();
+      }
+      // 规范形式（原图坐标）原样保留
+      expect(f.meta).toEqual(t.meta);
+    }
+  });
+
+  it("导出 JSON → 重新导入 → 重打包：预览对齐、边界与数值完全一致", async () => {
+    const trimmed = await trimmedWithMeta();
+    const layout = packFrames(toInputs(trimmed), PADDING, 1024, true);
+    const settings = { ...DEFAULT_SETTINGS, padding: PADDING, maxSize: 1024 };
+
+    // 导出（坐标系声明 + 原始图像坐标）
+    const json = buildAtlasJSON(layout, { imageName: "atlas.png", trimmed: true, settings });
+    expect(json.meta.coordinateSpace).toBe("source-image");
+    for (const t of trimmed) {
+      const jf = json.frames[t.name]!;
+      expect(jf.pivot, `${t.name} pivot 应为原图坐标`).toEqual(t.meta.pivot);
+      expect(jf.anchor).toEqual(t.meta.anchor);
+      expect(jf.nineSlice ?? null).toEqual(t.meta.nineSlice);
+      expect(jf.sourceSize).toEqual({ w: t.srcW, h: t.srcH });
+    }
+
+    // 重新导入
+    const parsed = parseAtlasJSON(JSON.parse(JSON.stringify(json)));
+    expect(parsed.frames.map((f) => f.meta)).toEqual(trimmed.map((t) => t.meta));
+
+    // 用导入结果重打包（同设置）：布局、图集坐标、边界完全一致
+    const repack = packFrames(
+      parsed.frames.map((f, i) => ({
+        id: `g${i}`,
+        name: f.name,
+        w: f.spriteSourceSize.w,
+        h: f.spriteSourceSize.h,
+        trim: { ...f.spriteSourceSize },
+        srcW: f.sourceSize.w,
+        srcH: f.sourceSize.h,
+        duration: f.duration,
+        meta: f.meta
+      })),
+      parsed.settings.padding,
+      1024,
+      true
+    );
+    expect(repack.atlasWidth).toBe(layout.atlasWidth);
+    expect(repack.atlasHeight).toBe(layout.atlasHeight);
+    for (const [i, f] of repack.frames.entries()) {
+      const src = layout.frames[i]!;
+      // 预览对齐所依赖的裁切偏移与内容矩形一致
+      expect([f.x, f.y, f.w, f.h], f.name).toEqual([src.x, src.y, src.w, src.h]);
+      expect(f.trim).toEqual(src.trim);
+      // pivot / anchor / 九宫格：图集坐标与原图坐标全部一致
+      expect(f.atlasPivot).toEqual(src.atlasPivot);
+      expect(f.atlasAnchor).toEqual(src.atlasAnchor);
+      expect(f.atlasNineSlice).toEqual(src.atlasNineSlice);
+      expect(f.meta).toEqual(src.meta);
+    }
+  });
+
+  it("修改留白后重打包：图集坐标变化，原始图像坐标不变", async () => {
+    const trimmed = await trimmedWithMeta();
+    const inputs = toInputs(trimmed);
+    const small = packFrames(inputs, 1, 1024, true);
+    const large = packFrames(inputs, 8, 1024, true);
+
+    for (const [i, f2] of large.frames.entries()) {
+      const f1 = small.frames[i]!;
+      // 原始图像语义坐标不变
+      expect(f2.meta).toEqual(f1.meta);
+      // 图集坐标随留白/布局变化，但相对内容位置的偏移不变
+      expect(f2.atlasPivot.x - f2.x).toBe(f1.atlasPivot.x - f1.x);
+      expect(f2.atlasPivot.y - f2.y).toBe(f1.atlasPivot.y - f1.y);
+      expect(f2.atlasAnchor.x - f2.x).toBe(f1.atlasAnchor.x - f1.x);
+      if (f1.atlasNineSlice && f2.atlasNineSlice) {
+        expect(f2.atlasNineSlice.left - f2.x).toBe(f1.atlasNineSlice.left - f1.x);
+        expect(f2.atlasNineSlice.bottom - f2.y).toBe(f1.atlasNineSlice.bottom - f1.y);
+      }
+    }
   });
 });

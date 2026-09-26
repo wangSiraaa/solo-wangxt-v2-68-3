@@ -1,10 +1,10 @@
 import { openDB, type IDBPDatabase } from "idb";
-import type { FrameItem, PackResult, Settings } from "./types";
+import type { FrameItem, FrameMeta, PackResult, Settings } from "./types";
 import type { AtlasJSON } from "./serialize";
 
 /**
- * IndexedDB 持久化：帧 PNG（Blob）、时长、设置与最近一次打包结果
- * 全部保存在浏览器本地，不上传任何数据。
+ * IndexedDB 持久化：帧 PNG（Blob）、时长、每帧元数据（pivot/anchor/九宫格）、
+ * 设置与最近一次打包结果全部保存在浏览器本地，不上传任何数据。
  */
 
 const DB_NAME = "sprite-atlas-studio";
@@ -27,6 +27,8 @@ export interface StoredProject {
     width: number;
     height: number;
     blob: Blob;
+    /** 原始图像坐标系元数据；旧版本数据可能缺失，加载时补默认值 */
+    meta?: FrameMeta;
   }>;
   pack: StoredPack | null;
 }
@@ -72,7 +74,12 @@ export function toStored(
       duration: f.duration,
       width: f.width,
       height: f.height,
-      blob: f.blob
+      blob: f.blob,
+      meta: {
+        pivot: { ...f.meta.pivot },
+        anchor: { ...f.meta.anchor },
+        nineSlice: f.meta.nineSlice ? { ...f.meta.nineSlice } : null
+      }
     })),
     pack: pack && json ? { json, atlasBlob: pack.atlasBlob } : null
   };

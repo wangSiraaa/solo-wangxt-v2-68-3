@@ -4,6 +4,7 @@
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
   import FrameList from "./lib/components/FrameList.svelte";
   import Preview from "./lib/components/Preview.svelte";
+  import MetaEditor from "./lib/components/MetaEditor.svelte";
   import AtlasView from "./lib/components/AtlasView.svelte";
   import { addFiles, restoreFromDB, startAutoSave, status, notify } from "./lib/core/store";
 
@@ -50,6 +51,7 @@
     </section>
     <section class="center">
       <Preview />
+      <MetaEditor />
     </section>
     <section class="right">
       <AtlasView />

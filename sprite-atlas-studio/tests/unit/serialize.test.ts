@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { buildAtlasJSON, parseAtlasJSON, JSON_APP_ID } from "../../src/lib/core/serialize";
 import { packFrames, type PackInput } from "../../src/lib/core/pack";
+import { defaultFrameMeta } from "../../src/lib/core/meta";
 import { DEFAULT_SETTINGS } from "../../src/lib/core/types";
 
 function makeLayout() {
   const inputs: PackInput[] = [
-    { id: "1", name: "run_01.png", w: 42, h: 48, trim: { x: 8, y: 10, w: 42, h: 48 }, srcW: 64, srcH: 64, duration: 50 },
-    { id: "2", name: "run_02.png", w: 70, h: 40, trim: { x: 6, y: 4, w: 70, h: 40 }, srcW: 96, srcH: 48, duration: 80 },
-    { id: "3", name: "run_03.png", w: 200, h: 150, trim: { x: 0, y: 0, w: 200, h: 150 }, srcW: 200, srcH: 150, duration: 120 }
+    { id: "1", name: "run_01.png", w: 42, h: 48, trim: { x: 8, y: 10, w: 42, h: 48 }, srcW: 64, srcH: 64, duration: 50, meta: defaultFrameMeta(64, 64) },
+    { id: "2", name: "run_02.png", w: 70, h: 40, trim: { x: 6, y: 4, w: 70, h: 40 }, srcW: 96, srcH: 48, duration: 80, meta: defaultFrameMeta(96, 48) },
+    { id: "3", name: "run_03.png", w: 200, h: 150, trim: { x: 0, y: 0, w: 200, h: 150 }, srcW: 200, srcH: 150, duration: 120, meta: defaultFrameMeta(200, 150) }
   ];
   return packFrames(inputs, 2, 1024, true);
 }

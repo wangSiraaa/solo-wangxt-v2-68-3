@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { packFrames, type PackInput } from "../../src/lib/core/pack";
+import { defaultFrameMeta } from "../../src/lib/core/meta";
 
 function input(id: string, w: number, h: number, duration = 100): PackInput {
   return {
@@ -10,7 +11,8 @@ function input(id: string, w: number, h: number, duration = 100): PackInput {
     trim: { x: 0, y: 0, w, h },
     srcW: w,
     srcH: h,
-    duration
+    duration,
+    meta: defaultFrameMeta(w, h)
   };
 }
 
