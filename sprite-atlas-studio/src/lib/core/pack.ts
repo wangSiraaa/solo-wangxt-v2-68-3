@@ -1,6 +1,7 @@
 import { MaxRectsPacker } from "maxrects-packer";
-import type { PackedFrame, TrimRect } from "./types";
+import type { FrameMeta, PackedFrame, TrimRect } from "./types";
 import { nextPow2 } from "./trim";
+import { deriveAtlasMeta } from "./meta";
 
 /** 参与打包的单帧输入（尺寸为裁切后的内容尺寸） */
 export interface PackInput {
@@ -14,6 +15,8 @@ export interface PackInput {
   srcW: number;
   srcH: number;
   duration: number;
+  /** 规范元数据（原始画布坐标系），原样透传到打包结果 */
+  meta: FrameMeta;
 }
 
 export interface PackLayout {
@@ -97,17 +100,21 @@ export function packFrames(
   const frames: PackedFrame[] = inputs.map((f) => {
     const r = byId.get(f.id);
     if (!r) throw new Error(`帧 ${f.name} 未能放入图集`);
+    const x = r.x + padding;
+    const y = r.y + padding;
     return {
       id: f.id,
       name: f.name,
-      x: r.x + padding,
-      y: r.y + padding,
+      x,
+      y,
       w: f.w,
       h: f.h,
       trim: f.trim,
       srcW: f.srcW,
       srcH: f.srcH,
-      duration: f.duration
+      duration: f.duration,
+      meta: f.meta,
+      atlasMeta: deriveAtlasMeta(f.meta, { x, y }, f.trim, f.srcW, f.srcH)
     };
   });
 

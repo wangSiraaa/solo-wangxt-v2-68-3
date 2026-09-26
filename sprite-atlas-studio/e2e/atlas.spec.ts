@@ -12,6 +12,17 @@ async function importFrames(page: Page): Promise<void> {
   await expect(page.locator("#frame-list .frame-item")).toHaveCount(FRAME_NAMES.length);
 }
 
+/**
+ * 选中一帧：用 focus + Enter 而非鼠标点击。
+ * 软件渲染（swiftshader）headless 环境下鼠标按下-抬起会被误判为 HTML5 拖拽，
+ * 导致帧列表重排；键盘选择不受影响。
+ */
+async function selectFrame(page: Page, name: string): Promise<void> {
+  await page.locator(`[data-frame-name="${name}"]`).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".frame-item.selected")).toHaveAttribute("data-frame-name", name);
+}
+
 /** 从图集表格读出 name → [x, y, w, h] */
 async function readAtlasTable(page: Page): Promise<Record<string, number[]>> {
   const rows = page.locator("#atlas-table tbody tr");
@@ -68,6 +79,71 @@ test("完整流程：导入 → 设置时长 → 打包 → 预览 → 导出 �
   // 播完一轮应循环回帧 1（总时长 250 + 7*100 = 950ms）
   await expect(page.locator("#preview-frame-label")).toContainText("帧 1/8", { timeout: 5000 });
 
+  // 4.1) 元数据：walk_04 四周透明边均为 30px（128×128，内容 68×68）
+  //      暂停播放（避免动画自动切换选中帧），把 pivot 设到被裁掉的透明区
+  //      (5, 6)，anchor 设 (0.1, 0.2)，九宫格 [40,90,30,100]
+  await page.locator("#play-btn").click();
+  await selectFrame(page, "walk_04.png");
+  await page.locator("#jump-selected-btn").click();
+  await expect(page.locator('[data-testid="meta-stage"]')).toBeVisible();
+  await page.locator('[data-testid="pivot-x"]').fill("5");
+  await page.locator('[data-testid="pivot-x"]').dispatchEvent("change");
+  await page.locator('[data-testid="pivot-y"]').fill("6");
+  await page.locator('[data-testid="pivot-y"]').dispatchEvent("change");
+  await page.locator('[data-testid="anchor-x"]').fill("0.1");
+  await page.locator('[data-testid="anchor-x"]').dispatchEvent("change");
+  await page.locator('[data-testid="anchor-y"]').fill("0.2");
+  await page.locator('[data-testid="anchor-y"]').dispatchEvent("change");
+  await page.locator('[data-testid="ns-enable"]').check();
+  await page.locator('[data-testid="ns-left"]').fill("40");
+  await page.locator('[data-testid="ns-left"]').dispatchEvent("change");
+  await page.locator('[data-testid="ns-right"]').fill("90");
+  await page.locator('[data-testid="ns-right"]').dispatchEvent("change");
+  await page.locator('[data-testid="ns-top"]').fill("30");
+  await page.locator('[data-testid="ns-top"]').dispatchEvent("change");
+  await page.locator('[data-testid="ns-bottom"]').fill("100");
+  await page.locator('[data-testid="ns-bottom"]').dispatchEvent("change");
+  // 非法九宫格（交叉 right<left）被阻止，且输入框保留上次有效值 90
+  await page.locator('[data-testid="ns-right"]').fill("20");
+  await page.locator('[data-testid="ns-right"]').dispatchEvent("change");
+  await expect(page.locator('[data-testid="meta-error"]')).toContainText("交叉");
+  await expect(page.locator('[data-testid="ns-right"]')).toHaveValue("90");
+  // 越界同样被阻止
+  await page.locator('[data-testid="ns-left"]').fill("200");
+  await page.locator('[data-testid="ns-left"]').dispatchEvent("change");
+  await expect(page.locator('[data-testid="meta-error"]')).toContainText("超出原图");
+  await expect(page.locator('[data-testid="ns-left"]')).toHaveValue("40");
+  // pivot 越界被夹回/阻止
+  await page.locator('[data-testid="pivot-x"]').fill("999");
+  await page.locator('[data-testid="pivot-x"]').dispatchEvent("change");
+  await expect(page.locator('[data-testid="pivot-x"]')).not.toHaveValue("999");
+
+  // 4.2) 预览坐标读数：pivot (5, 6) 显示在原始画布坐标系
+  await expect(page.locator('[data-testid="preview-meta-coords"]')).toContainText("pivot (5.00, 6.00)");
+  await expect(page.locator('[data-testid="preview-meta-coords"]')).toContainText("anchor (0.10, 0.20)");
+
+  // 4.3) 留白改为 8px 重新打包：原始 pivot/anchor 不变，图集派生坐标变化
+  const derivedBefore = await page.locator('[data-testid="meta-derived"]').innerText();
+  // 先把焦点移出 pack 按钮，避免软件渲染环境下残留激活态触发额外打包
+  await page.locator("#opt-padding").focus();
+  await page.locator("#opt-padding").fill("8");
+  await page.locator("#pack-btn").click();
+  await expect(page.locator("#atlas-image")).toBeVisible();
+  // 等待 8px 的打包结果确实就绪（软件渲染下打包较慢，避免读到上一次 3px 的结果）
+  await expect(page.locator("#atlas-summary")).toContainText("留白 8px");
+  await selectFrame(page, "walk_04.png");
+  await expect(page.locator('[data-testid="pivot-x"]')).toHaveValue("5");
+  await expect(page.locator('[data-testid="pivot-y"]')).toHaveValue("6");
+  await expect(page.locator('[data-testid="anchor-x"]')).toHaveValue("0.1");
+  await expect(page.locator('[data-testid="anchor-y"]')).toHaveValue("0.2");
+  await expect(page.locator('[data-testid="ns-left"]')).toHaveValue("40");
+  await expect(page.locator('[data-testid="ns-right"]')).toHaveValue("90");
+  await expect(page.locator('[data-testid="ns-top"]')).toHaveValue("30");
+  await expect(page.locator('[data-testid="ns-bottom"]')).toHaveValue("100");
+  const derivedAfter = await page.locator('[data-testid="meta-derived"]').innerText();
+  expect(derivedAfter, "留白变化后图集坐标应改变").not.toBe(derivedBefore);
+  expect(derivedAfter).toContain("留白 8px");
+
   // 5) 导出 JSON 与 PNG
   const [jsonDownload] = await Promise.all([
     page.waitForEvent("download"),
@@ -90,12 +166,17 @@ test("完整流程：导入 → 设置时长 → 打包 → 预览 → 导出 �
   expect(json.frames["walk_02.png"].duration).toBe(100);
   expect(typeof json.meta.atlasDataURL).toBe("string");
   expect(json.meta.atlasDataURL.startsWith("data:image/png;base64,")).toBe(true);
-  // JSON 中的矩形与页面表格一致
-  for (const [name, rect] of Object.entries(tableBefore)) {
-    const f = json.frames[name];
-    expect([f.frame.x, f.frame.y, f.frame.w, f.frame.h], name).toEqual(rect);
-    expect(f.rotated).toBe(false);
-  }
+
+  // 元数据使用明确的原始画布坐标系与原图尺寸
+  const f04 = json.frames["walk_04.png"];
+  expect(f04.sourceSize).toEqual({ w: 128, h: 128 });
+  expect(f04.pivot).toEqual({ x: 5, y: 6 });
+  expect(f04.anchor).toEqual({ x: 0.1, y: 0.2 });
+  expect(f04.nineSlice).toEqual({ left: 40, right: 90, top: 30, bottom: 100 });
+  // pivot 位于被裁掉的透明区：图集派生 x/y 小于内容框 x/y
+  expect(f04.atlasMeta.pivot.x).toBe(f04.pivot.x - f04.spriteSourceSize.x + f04.frame.x);
+  expect(f04.atlasMeta.pivot.x).toBeLessThan(f04.frame.x);
+  expect(f04.atlasMeta.nineSlice.left).toBe(40 - f04.spriteSourceSize.x + f04.frame.x);
 
   // 6) 清空（同时清掉 IndexedDB）
   await page.getByRole("button", { name: "清空" }).click();
@@ -116,11 +197,48 @@ test("完整流程：导入 → 设置时长 → 打包 → 预览 → 导出 �
   await expect(page.locator(`[data-duration-for="walk_01.png"]`)).toHaveValue("250");
   await expect(page.locator(`[data-duration-for="walk_02.png"]`)).toHaveValue("100");
 
-  // 打包结果恢复：位置尺寸与导出前一致
+  // 打包结果恢复：位置尺寸与导出时（留白 8px）一致
   const tableAfter = await readAtlasTable(page);
-  expect(tableAfter).toEqual(tableBefore);
+  const tableExport = Object.fromEntries(
+    Object.entries(json.frames).map(([name, f]) => [
+      name,
+      [f.frame.x, f.frame.y, f.frame.w, f.frame.h]
+    ])
+  );
+  expect(tableAfter).toEqual(tableExport);
 
-  // 预览恢复播放
+  // 元数据无损还原：暂停播放后选中 walk_04，数值与导出前完全一致
+  await page.locator("#play-btn").click();
+  await selectFrame(page, "walk_04.png");
+  await expect(page.locator('[data-testid="pivot-x"]')).toHaveValue("5");
+  await expect(page.locator('[data-testid="pivot-y"]')).toHaveValue("6");
+  await expect(page.locator('[data-testid="anchor-x"]')).toHaveValue("0.1");
+  await expect(page.locator('[data-testid="anchor-y"]')).toHaveValue("0.2");
+  await expect(page.locator('[data-testid="ns-enable"]')).toBeChecked();
+  await expect(page.locator('[data-testid="ns-left"]')).toHaveValue("40");
+  await expect(page.locator('[data-testid="ns-right"]')).toHaveValue("90");
+  await expect(page.locator('[data-testid="ns-top"]')).toHaveValue("30");
+  await expect(page.locator('[data-testid="ns-bottom"]')).toHaveValue("100");
+  await expect(page.locator('[data-testid="preview-meta-coords"]')).toContainText("pivot (5.00, 6.00)");
+
+  // 以恢复后的项目把留白改回 3px 并重新打包：规范值不变，图集矩形与第一次打包一致
+  await page.locator("#opt-padding").focus();
+  await page.locator("#opt-padding").fill("3");
+  await page.locator("#pack-btn").click();
+  await expect(page.locator("#atlas-image")).toBeVisible();
+  await expect(page.locator("#atlas-summary")).toContainText("留白 3px");
+  await selectFrame(page, "walk_04.png");
+  await expect(page.locator('[data-testid="pivot-x"]')).toHaveValue("5");
+  await expect(page.locator('[data-testid="pivot-y"]')).toHaveValue("6");
+  await expect(page.locator('[data-testid="anchor-x"]')).toHaveValue("0.1");
+  await expect(page.locator('[data-testid="anchor-y"]')).toHaveValue("0.2");
+  await expect(page.locator('[data-testid="ns-left"]')).toHaveValue("40");
+  await expect(page.locator('[data-testid="ns-right"]')).toHaveValue("90");
+  await expect(page.locator('[data-testid="ns-top"]')).toHaveValue("30");
+  await expect(page.locator('[data-testid="ns-bottom"]')).toHaveValue("100");
+  const tableRepacked = await readAtlasTable(page);
+  expect(tableRepacked).toEqual(tableBefore);
+  // 预览对齐：仍能按帧序播放且显示图集信息
   await expect(page.locator("#preview-frame-label")).toContainText("帧 1/8");
   await expect(page.locator("#preview-atlas-info")).toContainText("图集 (");
 
@@ -129,4 +247,12 @@ test("完整流程：导入 → 设置时长 → 打包 → 预览 → 导出 �
   await page.reload();
   await expect(page.locator("#frame-list .frame-item")).toHaveCount(FRAME_NAMES.length);
   await expect(page.locator("#atlas-table tbody tr")).toHaveCount(FRAME_NAMES.length);
+
+  // 刷新后元数据仍在
+  await page.locator("#play-btn").click();
+  await selectFrame(page, "walk_04.png");
+  await expect(page.locator('[data-testid="pivot-x"]')).toHaveValue("5");
+  await expect(page.locator('[data-testid="anchor-y"]')).toHaveValue("0.2");
+  await expect(page.locator('[data-testid="ns-enable"]')).toBeChecked();
+  await expect(page.locator('[data-testid="ns-bottom"]')).toHaveValue("100");
 });

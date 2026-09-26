@@ -9,6 +9,10 @@
   let app: Application | null = null;
   let sprite: Sprite | null = null;
   let border: Graphics | null = null;
+  /** pivot（红）/ anchor（蓝）/ 九宫格（绿）叠加层，坐标以原始未裁切画布为准 */
+  let metaGfx: Graphics | null = null;
+  /** 原始画布上的九宫格矩形填充，用于让九宫格区域在预览中可见 */
+  let curMetaInfo = "";
 
   const animator = new Animator([]);
   let playing = true;
@@ -64,6 +68,8 @@
       curName = "";
       curAtlasInfo = "";
       curOffsetInfo = "";
+      curMetaInfo = "";
+      metaGfx?.clear();
       return;
     }
 
@@ -108,6 +114,7 @@
       border.scale.set(stageScale);
       border.position.set(baseX, baseY);
     }
+    if (curIndex >= 0) drawMeta();
   }
 
   function applyFrame(i: number): void {
@@ -126,7 +133,53 @@
     const pf = packedFrames?.[i];
     curAtlasInfo = pf ? `图集 (${pf.x}, ${pf.y}) ${pf.w}×${pf.h}` : "未打包";
     curOffsetInfo = pf ? `偏移 (${pf.trim.x}, ${pf.trim.y}) 原始 ${pf.srcW}×${pf.srcH}` : "";
+    drawMeta();
     selectedId.set(item?.id ?? null);
+  }
+
+  /** 绘制当前帧 pivot / anchor / 九宫格（原始画布坐标，随预览整体缩放/偏移） */
+  function drawMeta(): void {
+    if (!metaGfx) return;
+    metaGfx.clear();
+    const list = $frames;
+    const item = list[curIndex];
+    if (!item) return;
+    metaGfx.scale.set(stageScale);
+    metaGfx.position.set(baseX, baseY);
+
+    const m = item.meta;
+    if (m.nineSlice) {
+      const ns = m.nineSlice;
+      // 中心拉伸区淡绿底
+      metaGfx
+        .rect(ns.left, ns.top, Math.max(0, ns.right - ns.left), Math.max(0, ns.bottom - ns.top))
+        .fill({ color: 0x38c793, alpha: 0.12 });
+      // 四条边界线
+      metaGfx
+        .moveTo(ns.left, 0).lineTo(ns.left, item.height)
+        .moveTo(ns.right, 0).lineTo(ns.right, item.height)
+        .moveTo(0, ns.top).lineTo(item.width, ns.top)
+        .moveTo(0, ns.bottom).lineTo(item.width, ns.bottom)
+        .stroke({ width: 1 / stageScale, color: 0x38c793, alpha: 0.9 });
+      curMetaInfo = `九宫格 [${ns.left},${ns.right},${ns.top},${ns.bottom}]`;
+    } else {
+      curMetaInfo = "";
+    }
+
+    // pivot：红圆 + 十字
+    const pw = 4 / stageScale;
+    metaGfx
+      .circle(m.pivot.x, m.pivot.y, pw)
+      .fill({ color: 0xe5534b })
+      .moveTo(m.pivot.x - pw * 2, m.pivot.y).lineTo(m.pivot.x + pw * 2, m.pivot.y)
+      .moveTo(m.pivot.x, m.pivot.y - pw * 2).lineTo(m.pivot.x, m.pivot.y + pw * 2)
+      .stroke({ width: 1 / stageScale, color: 0xe5534b });
+
+    // anchor：蓝方块
+    const aw = 3.5 / stageScale;
+    metaGfx
+      .rect(m.anchor.x * item.width - aw, m.anchor.y * item.height - aw, aw * 2, aw * 2)
+      .fill({ color: 0x4f8cff });
   }
 
   onMount(async () => {
@@ -141,8 +194,10 @@
 
     border = new Graphics();
     sprite = new Sprite();
+    metaGfx = new Graphics();
     app.stage.addChild(border);
     app.stage.addChild(sprite);
+    app.stage.addChild(metaGfx);
 
     app.ticker.add((ticker) => {
       animator.playing = playing;
@@ -171,9 +226,37 @@
   $: if (app) {
     animator.setDurations($frames.map((f) => f.duration));
   }
+  // 元数据变化（未触发纹理重建）→ 仅重画叠加层
+  $: metaKey = $frames.map((f) => JSON.stringify(f.meta)).join("|");
+  $: if (app) {
+    void metaKey;
+    drawMeta();
+  }
 
   function togglePlay(): void {
     playing = !playing;
+  }
+
+  /** 暂停并把预览切到当前在帧列表中选中的帧 */
+  function jumpToSelected(): void {
+    if (!packedFrames) {
+      // 未打包时纹理顺序与帧列表一致
+      const i = $frames.findIndex((f) => f.id === $selectedId);
+      if (i >= 0) {
+        playing = false;
+        animator.reset();
+        animator.index = i;
+        applyFrame(i);
+      }
+      return;
+    }
+    const i = packedFrames.findIndex((f) => f.id === $selectedId);
+    if (i >= 0) {
+      playing = false;
+      animator.reset();
+      animator.index = i;
+      applyFrame(i);
+    }
   }
 </script>
 
@@ -182,6 +265,9 @@
   <div class="stage checker" bind:this={wrap} data-testid="preview-stage"></div>
   <div class="controls">
     <button id="play-btn" on:click={togglePlay}>{playing ? "⏸ 暂停" : "▶ 播放"}</button>
+    <button id="jump-selected-btn" on:click={jumpToSelected} title="暂停并在预览中显示当前选中帧">
+      ⤓ 显示选中帧
+    </button>
     <span class="mono info" id="preview-frame-label">
       {#if curIndex >= 0}
         帧 {curIndex + 1}/{$frames.length} · {curName} · {curDuration}ms
@@ -192,7 +278,14 @@
   </div>
   <div class="mono dim" id="preview-atlas-info">
     {#if curIndex >= 0}
-      {curAtlasInfo}{curOffsetInfo ? ` · ${curOffsetInfo}` : ""}
+      {curAtlasInfo}{curOffsetInfo ? ` · ${curOffsetInfo}` : ""}{curMetaInfo ? ` · ${curMetaInfo}` : ""}
+    {/if}
+  </div>
+  <div class="mono dim" data-testid="preview-meta-coords">
+    {#if curIndex >= 0 && $frames[curIndex]}
+      {@const mf = $frames[curIndex]!}
+      pivot ({mf.meta.pivot.x.toFixed(2)}, {mf.meta.pivot.y.toFixed(2)})
+      · anchor ({mf.meta.anchor.x.toFixed(2)}, {mf.meta.anchor.y.toFixed(2)})
     {/if}
   </div>
 </div>

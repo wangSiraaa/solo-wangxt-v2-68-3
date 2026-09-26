@@ -1,15 +1,17 @@
 import { openDB, type IDBPDatabase } from "idb";
-import type { FrameItem, PackResult, Settings } from "./types";
+import type { FrameItem, FrameMeta, PackResult, Settings } from "./types";
 import type { AtlasJSON } from "./serialize";
 
 /**
- * IndexedDB 持久化：帧 PNG（Blob）、时长、设置与最近一次打包结果
+ * IndexedDB 持久化：帧 PNG（Blob）、时长、每帧元数据、设置与最近一次打包结果
  * 全部保存在浏览器本地，不上传任何数据。
  */
 
 const DB_NAME = "sprite-atlas-studio";
 const STORE = "kv";
 const PROJECT_KEY = "project";
+/** 2：帧记录增加 pivot/anchor/nineSlice 元数据（1 为无元数据旧版本） */
+const PROJECT_VERSION = 2;
 
 export interface StoredPack {
   json: AtlasJSON;
@@ -17,7 +19,7 @@ export interface StoredPack {
 }
 
 export interface StoredProject {
-  version: 1;
+  version: number;
   savedAt: number;
   settings: Settings;
   frames: Array<{
@@ -27,6 +29,8 @@ export interface StoredProject {
     width: number;
     height: number;
     blob: Blob;
+    /** 旧版本项目可能没有该字段，恢复时按默认值补 */
+    meta?: FrameMeta;
   }>;
   pack: StoredPack | null;
 }
@@ -63,7 +67,7 @@ export function toStored(
   json: AtlasJSON | null
 ): StoredProject {
   return {
-    version: 1,
+    version: PROJECT_VERSION,
     savedAt: Date.now(),
     settings: { ...settings },
     frames: frames.map((f) => ({
@@ -72,7 +76,12 @@ export function toStored(
       duration: f.duration,
       width: f.width,
       height: f.height,
-      blob: f.blob
+      blob: f.blob,
+      meta: {
+        pivot: { ...f.meta.pivot },
+        anchor: { ...f.meta.anchor },
+        nineSlice: f.meta.nineSlice ? { ...f.meta.nineSlice } : null
+      }
     })),
     pack: pack && json ? { json, atlasBlob: pack.atlasBlob } : null
   };
